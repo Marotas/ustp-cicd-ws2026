@@ -1,22 +1,8 @@
 import './style.css';
+import { COLUMNS, ROWS, SHAPES, Game, dropInterval } from './game';
+import type { PieceType } from './game';
 
-const COLUMNS = 10;
-const ROWS = 20;
 const CELL = 30;
-
-type PieceType = 'I' | 'O' | 'T' | 'S' | 'Z' | 'J' | 'L';
-type Matrix = number[][];
-type Piece = { type: PieceType; matrix: Matrix; x: number; y: number };
-
-const SHAPES: Record<PieceType, Matrix> = {
-  I: [[1, 1, 1, 1]],
-  O: [[1, 1], [1, 1]],
-  T: [[0, 1, 0], [1, 1, 1]],
-  S: [[0, 1, 1], [1, 1, 0]],
-  Z: [[1, 1, 0], [0, 1, 1]],
-  J: [[1, 0, 0], [1, 1, 1]],
-  L: [[0, 0, 1], [1, 1, 1]],
-};
 
 const COLORS: Record<PieceType, [string, string]> = {
   I: ['#39d8ef', '#1199c4'], O: ['#ffd166', '#e89a35'], T: ['#b78aff', '#8053d6'],
@@ -46,149 +32,22 @@ const holdContext = holdCanvas.getContext('2d');
 const nextContext = nextCanvas.getContext('2d');
 if (!context || !holdContext || !nextContext) throw new Error('Canvas rendering is unavailable.');
 
-let board = createBoard();
-let bag: PieceType[] = [];
-let upcoming: PieceType[] = [];
-let active = createPiece(drawFromBag());
-let held: PieceType | null = null;
-let canHold = true;
-let score = 0;
-let lines = 0;
-let level = 1;
+const game = new Game({
+  onLock: () => updateStats(),
+  onGameOver: () => finishGame(),
+  onHoldAvailability: (canHold) => { holdStatus.textContent = canHold ? 'SAVE FOR LATER' : 'HOLD USED'; },
+});
 let best = readBest();
-let paused = false;
-let gameOver = false;
 let lastDrop = 0;
 let animationFrame = 0;
 
-function createBoard(): (PieceType | null)[][] {
-  return Array.from({ length: ROWS }, () => Array<PieceType | null>(COLUMNS).fill(null));
-}
-
-function refillBag(): void {
-  const types = Object.keys(SHAPES) as PieceType[];
-  for (let i = types.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [types[i], types[j]] = [types[j], types[i]];
-  }
-  bag.push(...types);
-}
-
-function drawFromBag(): PieceType {
-  if (bag.length === 0) refillBag();
-  return bag.pop()!;
-}
-
-function createPiece(type: PieceType): Piece {
-  const matrix = SHAPES[type].map((row) => [...row]);
-  return { type, matrix, x: Math.floor((COLUMNS - matrix[0].length) / 2), y: 0 };
-}
-
-function collision(piece: Piece, dx = 0, dy = 0, matrix = piece.matrix): boolean {
-  return matrix.some((row, rowIndex) => row.some((value, columnIndex) => {
-    if (!value) return false;
-    const x = piece.x + columnIndex + dx;
-    const y = piece.y + rowIndex + dy;
-    return x < 0 || x >= COLUMNS || y >= ROWS || (y >= 0 && board[y][x] !== null);
-  }));
-}
-
-function fillUpcoming(): void {
-  while (upcoming.length < 6) upcoming.push(drawFromBag());
-}
-
-function spawnNext(): void {
-  fillUpcoming();
-  active = createPiece(upcoming.shift()!);
-  fillUpcoming();
-  canHold = true;
-  holdStatus.textContent = 'SAVE FOR LATER';
-  if (collision(active)) finishGame();
-}
-
-function rotate(matrix: Matrix): Matrix {
-  return matrix[0].map((_, column) => matrix.map((row) => row[column]).reverse());
-}
-
-function rotateActive(): void {
-  if (paused || gameOver) return;
-  const rotated = rotate(active.matrix);
-  for (const offset of [0, -1, 1, -2, 2]) {
-    if (!collision(active, offset, 0, rotated)) {
-      active.matrix = rotated;
-      active.x += offset;
-      return;
-    }
-  }
-}
-
-function move(dx: number, dy: number): boolean {
-  if (paused || gameOver || collision(active, dx, dy)) return false;
-  active.x += dx;
-  active.y += dy;
-  if (dy > 0) score += 1;
-  return true;
-}
-
-function holdPiece(): void {
-  if (paused || gameOver || !canHold) return;
-  const currentType = active.type;
-  if (held) {
-    active = createPiece(held);
-    held = currentType;
-    if (collision(active)) finishGame();
-  } else {
-    held = currentType;
-    spawnNext();
-  }
-  canHold = false;
-  holdStatus.textContent = 'HOLD USED';
-}
-
-function hardDrop(): void {
-  if (paused || gameOver) return;
-  let distance = 0;
-  while (!collision(active, 0, 1)) {
-    active.y += 1;
-    distance += 1;
-  }
-  score += distance * 2;
-  lockPiece();
-}
-
-function lockPiece(): void {
-  for (let y = 0; y < active.matrix.length; y++) {
-    for (let x = 0; x < active.matrix[y].length; x++) {
-      if (!active.matrix[y][x]) continue;
-      const boardY = active.y + y;
-      const boardX = active.x + x;
-      if (boardY >= 0) board[boardY][boardX] = active.type;
-    }
-  }
-
-  let cleared = 0;
-  board = board.filter((row) => {
-    if (row.every((cell) => cell !== null)) {
-      cleared += 1;
-      return false;
-    }
-    return true;
-  });
-  while (board.length < ROWS) board.unshift(Array<PieceType | null>(COLUMNS).fill(null));
-
-  const rewards = [0, 100, 300, 500, 800];
-  if (cleared > 0) {
-    score += (rewards[cleared] ?? 800) * level;
-    lines += cleared;
-    level = Math.floor(lines / 10) + 1;
-  }
-  updateStats();
-  spawnNext();
-}
+function move(dx: number, dy: number): boolean { return game.move(dx, dy); }
+function rotateActive(): void { game.rotateActive(); }
+function holdPiece(): void { game.holdPiece(); }
+function hardDrop(): void { game.hardDrop(); }
 
 function finishGame(): void {
-  gameOver = true;
-  best = Math.max(best, score);
+  best = Math.max(best, game.score);
   try { localStorage.setItem('vector-blocks-best', String(best)); } catch { /* Storage can be unavailable in private browsing. */ }
   showOverlay('RUN COMPLETE', 'That was a good one.', 'Every great run starts with another.', 'PLAY AGAIN', restart);
   updateStats();
@@ -204,10 +63,10 @@ function readBest(): number {
 }
 
 function updateStats(): void {
-  scoreElement.textContent = String(score).padStart(6, '0');
+  scoreElement.textContent = String(game.score).padStart(6, '0');
   bestElement.textContent = String(best).padStart(6, '0');
-  levelElement.textContent = String(level).padStart(2, '0');
-  linesElement.textContent = String(lines).padStart(2, '0');
+  levelElement.textContent = String(game.level).padStart(2, '0');
+  linesElement.textContent = String(game.lines).padStart(2, '0');
 }
 
 function showOverlay(kicker: string, title: string, copy: string, buttonText: string, action: () => void): void {
@@ -220,28 +79,16 @@ function showOverlay(kicker: string, title: string, copy: string, buttonText: st
 }
 
 function togglePause(): void {
-  if (gameOver) return;
-  paused = !paused;
-  if (paused) showOverlay('TAKE A MOMENT', 'Take a breath.', 'Your stack will be right here.', 'RESUME GAME', togglePause);
+  if (game.gameOver) return;
+  game.paused = !game.paused;
+  if (game.paused) showOverlay('TAKE A MOMENT', 'Take a breath.', 'Your stack will be right here.', 'RESUME GAME', togglePause);
   else overlay.hidden = true;
   lastDrop = performance.now();
 }
 
 function restart(): void {
-  board = createBoard();
-  bag = [];
-  upcoming = [];
-  held = null;
-  canHold = true;
-  score = 0;
-  lines = 0;
-  level = 1;
-  paused = false;
-  gameOver = false;
-  active = createPiece(drawFromBag());
-  fillUpcoming();
+  game.reset();
   overlay.hidden = true;
-  holdStatus.textContent = 'SAVE FOR LATER';
   lastDrop = performance.now();
   updateStats();
 }
@@ -274,21 +121,21 @@ function drawBoard(): void {
     context.beginPath(); context.moveTo(0, y * CELL + 0.5); context.lineTo(gameCanvas.width, y * CELL + 0.5); context.stroke();
   }
 
-  board.forEach((row, y) => row.forEach((type, x) => { if (type) paintBlock(context, type, x * CELL, y * CELL, CELL); }));
+  game.board.forEach((row, y) => row.forEach((type, x) => { if (type) paintBlock(context, type, x * CELL, y * CELL, CELL); }));
 
-  if (!gameOver) {
-    let ghostY = active.y;
-    while (!collision(active, 0, ghostY - active.y + 1)) ghostY++;
-    active.matrix.forEach((row, y) => row.forEach((value, x) => {
+  if (!game.gameOver) {
+    let ghostY = game.active.y;
+    while (!game.collides(0, ghostY - game.active.y + 1)) ghostY++;
+    game.active.matrix.forEach((row, y) => row.forEach((value, x) => {
       if (!value || ghostY + y < 0) return;
-      const px = (active.x + x) * CELL;
+      const px = (game.active.x + x) * CELL;
       const py = (ghostY + y) * CELL;
       context.strokeStyle = 'rgba(190, 204, 229, 0.32)';
       context.lineWidth = 1;
       context.strokeRect(px + 3.5, py + 3.5, CELL - 7, CELL - 7);
     }));
-    active.matrix.forEach((row, y) => row.forEach((value, x) => {
-      if (value) paintBlock(context, active.type, (active.x + x) * CELL, (active.y + y) * CELL, CELL);
+    game.active.matrix.forEach((row, y) => row.forEach((value, x) => {
+      if (value) paintBlock(context, game.active.type, (game.active.x + x) * CELL, (game.active.y + y) * CELL, CELL);
     }));
   }
 }
@@ -320,16 +167,16 @@ function drawPreview(ctx: CanvasRenderingContext2D, types: (PieceType | null)[],
 }
 
 function render(time: number): void {
-  if (!paused && !gameOver) {
-    const interval = Math.max(90, 800 - (level - 1) * 65);
+  if (!game.paused && !game.gameOver) {
+    const interval = dropInterval(game.level);
     if (time - lastDrop >= interval) {
-      if (!move(0, 1)) lockPiece();
+      game.tick();
       lastDrop = time;
     }
   }
   drawBoard();
-  drawPreview(holdContext, [held], 1);
-  drawPreview(nextContext, upcoming.slice(0, 5), 5);
+  drawPreview(holdContext, [game.held], 1);
+  drawPreview(nextContext, game.upcoming.slice(0, 5), 5);
   animationFrame = requestAnimationFrame(render);
 }
 
@@ -337,8 +184,8 @@ function handleKey(event: KeyboardEvent): void {
   const key = event.key.toLowerCase();
   if (['arrowleft', 'arrowright', 'arrowdown', 'arrowup', ' '].includes(key)) event.preventDefault();
   if (key === 'p' || key === 'escape') { togglePause(); return; }
-  if (paused || gameOver) {
-    if (key === 'enter' && gameOver) restart();
+  if (game.paused || game.gameOver) {
+    if (key === 'enter' && game.gameOver) restart();
     return;
   }
   switch (key) {
@@ -361,7 +208,6 @@ document.querySelector('[data-action="drop"]')?.addEventListener('click', hardDr
 document.querySelector('[data-action="hold"]')?.addEventListener('click', holdPiece);
 
 updateStats();
-fillUpcoming();
 lastDrop = performance.now();
 animationFrame = requestAnimationFrame(render);
 
