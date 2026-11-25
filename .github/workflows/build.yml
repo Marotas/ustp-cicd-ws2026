@@ -23,3 +23,25 @@ jobs:
           name: web-app
           path: dist/
           if-no-files-found: error
+    test:
+      needs: build                 # runs after the build
+      strategy:
+        fail-fast: false
+        matrix:
+          os: [ubuntu-latest, windows-latest]
+      runs-on: ${{ matrix.os }}
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-node@v4
+          with:
+            node-version: 22
+            cache: npm
+        - run: npm ci
+        - run: npm test -- --coverage
+        - uses: actions/upload-artifact@v4
+          if: always()             # upload results even when tests fail
+          with:
+            name: test-results-${{ matrix.os }}   # must be unique per matrix job
+            path: |
+              test-results/
+              coverage/
